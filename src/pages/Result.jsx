@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import {
   BarChart,
   Bar,
@@ -11,17 +11,19 @@ import {
   Cell,
   Legend
 } from "recharts";
-
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import { db, isFirebaseConfigured } from "../firebase";
 import jsPDF from "jspdf";
 
-export default function ResultScreen({ questions, answers, onRestart }) {
+export default function ResultScreen({ questions, answers, user, onRestart }) {
   const [reviewMode, setReviewMode] = useState(false);
   const [current, setCurrent] = useState(0);
   const [downloading, setDownloading] = useState(false);
+  const [savingResult, setSavingResult] = useState(false);
+  const [savedResult, setSavedResult] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const saveAttempted = useRef(false);
 
-  // =========================
-  // CALCULATIONS
-  // =========================
   const result = useMemo(() => {
     let correct = 0;
     let incorrect = 0;
@@ -48,9 +50,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
     return { correct, incorrect, unattempted, score, accuracy, sectionStats };
   }, [questions, answers]);
 
-  // =========================
-  // WEAK SUBJECTS
-  // =========================
   const weakSubjects = Object.entries(result.sectionStats)
     .map(([sec, data]) => ({
       sec,
@@ -59,11 +58,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
     .filter((s) => s.acc < 60)
     .sort((a, b) => a.acc - b.acc);
 
-  const weakSubject = weakSubjects[0] || null;
-
-  // =========================
-  // WEAK TOPICS
-  // =========================
   const weakTopicsBySubject = {};
   questions.forEach((q, i) => {
     const subject = q.section || "Other";
@@ -83,9 +77,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
     return { subject, topics: weak };
   });
 
-  // =========================
-  // CHART DATA
-  // =========================
   const sectionData = Object.entries(result.sectionStats).map(([sec, data]) => ({
     name: sec,
     accuracy: data.total === 0 ? 0 : Math.round((data.correct / data.total) * 100)
@@ -98,9 +89,73 @@ export default function ResultScreen({ questions, answers, onRestart }) {
   ];
   const COLORS = ["#22c55e", "#ef4444", "#9ca3af"];
 
-  // =========================
-  // PDF GENERATION
-  // =========================
+  useEffect(() => {
+    if (!user?.uid || savedResult || !isFirebaseConfigured || saveAttempted.current) return;
+
+    const saveResult = async () => {
+      saveAttempted.current = true;
+      setSavingResult(true);
+      setSaveError("");
+
+      try {
+        console.log("=== Saving Result ===");
+        console.log("Firebase Configured:", isFirebaseConfigured);
+        console.log("DB Instance:", db);
+        console.log("Saving result to Firestore for user:", user.uid);
+        console.log("Result data:", {
+          uid: user.uid,
+          accuracy: result.accuracy,
+          correct: result.correct,
+          totalQuestions: questions.length,
+        });
+        
+        if (!db) {
+          throw new Error("Firestore instance not available");
+        }
+        
+        const chaptersMap = {};
+        questions.forEach(q => {
+          const section = q.section || "Other";
+          const chapter = q.chapter || "General";
+          if (!chaptersMap[section]) chaptersMap[section] = [];
+          if (!chaptersMap[section].includes(chapter)) {
+            chaptersMap[section].push(chapter);
+          }
+        });
+        
+        await addDoc(collection(db, "results"), {
+          uid: user.uid,
+          name: user.name || "",
+          email: user.email || "",
+          score: result.score,
+          correct: result.correct,
+          incorrect: result.incorrect,
+          unattempted: result.unattempted,
+          accuracy: result.accuracy,
+          totalQuestions: questions.length,
+          sectionStats: result.sectionStats,
+          questions: questions,
+          answers: answers,
+          subjects: [...new Set(questions.map(q => q.section))],
+          chapters: chaptersMap,
+          createdAt: serverTimestamp(),
+        });
+        
+        console.log("✓ Result saved successfully to Firestore");
+        setSavedResult(true);
+      } catch (error) {
+        console.error("Failed to save result:", error);
+        console.error("Error code:", error.code);
+        setSaveError(error.message || "Unable to save result.");
+        saveAttempted.current = false; // Reset on error to allow retry
+      } finally {
+        setSavingResult(false);
+      }
+    };
+
+    saveResult();
+  }, [user?.uid, savedResult, isFirebaseConfigured]);
+
   const downloadPDF = async () => {
     setDownloading(true);
     try {
@@ -122,7 +177,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
       const setTC = (hex) => pdf.setTextColor(...hex2rgb(hex));
       const setDC = (hex) => pdf.setDrawColor(...hex2rgb(hex));
 
-      // ── HEADER ────────────────────────────────────────────
       setFill("#1e40af");
       pdf.rect(0, 0, W, 38, "F");
       setFill("#3b82f6");
@@ -141,12 +195,11 @@ export default function ResultScreen({ questions, answers, onRestart }) {
 
       y = 48;
 
-      // ── SCORE CARDS ───────────────────────────────────────
       const cards = [
-        { label: "Total Score",  value: result.score,         color: "#16a34a", bg: "#f0fdf4", border: "#86efac" },
-        { label: "Correct",      value: result.correct,       color: "#15803d", bg: "#dcfce7", border: "#4ade80" },
-        { label: "Incorrect",    value: result.incorrect,     color: "#dc2626", bg: "#fef2f2", border: "#fca5a5" },
-        { label: "Unattempted",  value: result.unattempted,   color: "#6b7280", bg: "#f9fafb", border: "#d1d5db" },
+        { label: "Total Score",  value: result.score,          color: "#16a34a", bg: "#f0fdf4", border: "#86efac" },
+        { label: "Correct",      value: result.correct,        color: "#15803d", bg: "#dcfce7", border: "#4ade80" },
+        { label: "Incorrect",    value: result.incorrect,      color: "#dc2626", bg: "#fef2f2", border: "#fca5a5" },
+        { label: "Unattempted",  value: result.unattempted,    color: "#6b7280", bg: "#f9fafb", border: "#d1d5db" },
         { label: "Accuracy",     value: `${result.accuracy}%`, color: "#2563eb", bg: "#eff6ff", border: "#93c5fd" },
       ];
       const cardW = (contentW - 8) / cards.length;
@@ -162,7 +215,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
       });
       y += 30;
 
-      // ── SECTION ACCURACY BAR CHART ────────────────────────
       checkY(72);
       setFill("#f8fafc"); setDC("#e2e8f0");
       pdf.setLineWidth(0.3);
@@ -197,7 +249,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
       });
       y += 74;
 
-      // ── ATTEMPT PIE CHART ─────────────────────────────────
       checkY(60);
       setFill("#f8fafc"); setDC("#e2e8f0");
       pdf.roundedRect(margin, y, contentW, 54, 3, 3, "FD");
@@ -243,7 +294,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
       });
       y += 60;
 
-      // ── WEAK SUBJECT + WEAK TOPICS ────────────────────────
       checkY(46);
       const halfW = (contentW - 4) / 2;
 
@@ -283,7 +333,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
       }
       y += 46;
 
-      // ── PAGE 2+: ANSWER MAPPING ───────────────────────────
       addPage();
 
       setFill("#1e40af");
@@ -299,7 +348,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
 
         const statusBg     = isCorrect ? "#f0fdf4" : isWrong ? "#fef2f2" : "#f9fafb";
         const statusBorder = isCorrect ? "#86efac" : isWrong ? "#fca5a5" : "#e5e7eb";
-        const statusColor  = isCorrect ? "#16a34a" : isWrong ? "#dc2626" : "#6b7280";
         const statusLabel  = isCorrect ? "Correct  +4" : isWrong ? "Wrong  -1" : "Skipped  0";
         const statusBadge  = isCorrect ? "#16a34a" : isWrong ? "#dc2626" : "#9ca3af";
 
@@ -327,7 +375,7 @@ export default function ResultScreen({ questions, answers, onRestart }) {
             const isCorrectOpt = opt === q.answer;
             const isUserOpt = opt === userAns;
             let oBg = "#ffffff", oBorder = "#e5e7eb", oTC = "#374151";
-            if (isCorrectOpt)         { oBg = "#dcfce7"; oBorder = "#4ade80"; oTC = "#15803d"; }
+            if (isCorrectOpt)              { oBg = "#dcfce7"; oBorder = "#4ade80"; oTC = "#15803d"; }
             else if (isUserOpt && isWrong) { oBg = "#fee2e2"; oBorder = "#f87171"; oTC = "#b91c1c"; }
 
             setFill(oBg); setDC(oBorder); pdf.setLineWidth(0.25);
@@ -343,7 +391,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
         y = oy + 4;
       });
 
-      // ── FOOTER on all pages ───────────────────────────────
       const totalPages = pdf.getNumberOfPages();
       for (let p = 1; p <= totalPages; p++) {
         pdf.setPage(p);
@@ -401,35 +448,34 @@ export default function ResultScreen({ questions, answers, onRestart }) {
   // RESULT SCREEN
   // =========================
   return (
-    <div id="report-section" className="min-h-screen bg-gradient-to-br from-green-50 to-white p-6">
+    <div id="report-section" className="min-h-screen bg-gradient-to-br from-green-50 to-white p-4 md:p-6">
 
-      <h1 className="text-4xl font-bold text-center mb-8">🎯 Test Result</h1>
+      <h1 className="text-3xl md:text-4xl font-bold text-center mb-4">🎯 Test Result</h1>
 
       {/* MAIN STATS */}
-      <div className="grid md:grid-cols-4 gap-6 mb-8">
-        <div className="bg-white p-6 rounded-xl shadow text-center">
-          <p>Score</p>
-          <h2 className="text-3xl font-bold text-green-600">{result.score}</h2>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6 mb-8">
+        <div className="bg-white p-4 md:p-6 rounded-xl shadow text-center">
+          <p className="text-sm text-gray-500">Score</p>
+          <h2 className="text-2xl md:text-3xl font-bold text-green-600">{result.score}</h2>
         </div>
-        <div className="bg-white p-6 rounded-xl shadow text-center">
-          <p>Correct</p>
-          <h2 className="text-2xl text-green-500">{result.correct}</h2>
+        <div className="bg-white p-4 md:p-6 rounded-xl shadow text-center">
+          <p className="text-sm text-gray-500">Correct</p>
+          <h2 className="text-xl md:text-2xl text-green-500">{result.correct}</h2>
         </div>
-        <div className="bg-white p-6 rounded-xl shadow text-center">
-          <p>Incorrect</p>
-          <h2 className="text-2xl text-red-500">{result.incorrect}</h2>
+        <div className="bg-white p-4 md:p-6 rounded-xl shadow text-center">
+          <p className="text-sm text-gray-500">Incorrect</p>
+          <h2 className="text-xl md:text-2xl text-red-500">{result.incorrect}</h2>
         </div>
-        <div className="bg-white p-6 rounded-xl shadow text-center">
-          <p>Accuracy</p>
-          <h2 className="text-2xl text-blue-500">{result.accuracy}%</h2>
+        <div className="bg-white p-4 md:p-6 rounded-xl shadow text-center">
+          <p className="text-sm text-gray-500">Accuracy</p>
+          <h2 className="text-xl md:text-2xl text-blue-500">{result.accuracy}%</h2>
         </div>
       </div>
 
       {/* ANALYTICS */}
-      <div className="bg-white p-6 rounded-xl shadow mb-8">
+      <div className="bg-white p-4 md:p-6 rounded-xl shadow mb-8">
         <h2 className="text-xl font-bold mb-6">📊 Performance Analytics</h2>
         <div className="grid md:grid-cols-2 gap-6">
-
           <div className="p-4 bg-gray-50 rounded-lg shadow-sm">
             <h3 className="font-semibold mb-3">Section Accuracy</h3>
             <ResponsiveContainer width="100%" height={250}>
@@ -441,7 +487,6 @@ export default function ResultScreen({ questions, answers, onRestart }) {
               </BarChart>
             </ResponsiveContainer>
           </div>
-
           <div className="p-4 bg-gray-50 rounded-lg shadow-sm">
             <h3 className="font-semibold mb-3">Attempt Analysis</h3>
             <ResponsiveContainer width="100%" height={260}>
@@ -471,11 +516,10 @@ export default function ResultScreen({ questions, answers, onRestart }) {
               </PieChart>
             </ResponsiveContainer>
           </div>
-
         </div>
       </div>
 
-      {/* WEAK SUBJECT + WEAK TOPICS — items-start prevents height stretching */}
+      {/* WEAK SUBJECT + WEAK TOPICS */}
       <div className="grid md:grid-cols-2 gap-6 mb-8 items-start">
         {weakSubjects.length > 0 && (
           <div className="bg-white p-6 rounded-xl shadow">
@@ -521,20 +565,28 @@ export default function ResultScreen({ questions, answers, onRestart }) {
         )}
       </div>
 
-      {/* ACTIONS */}
-      <div className="flex gap-4 justify-center">
-        <button onClick={() => setReviewMode(true)} className="bg-purple-600 text-white px-6 py-3 rounded font-semibold">
+      {/* ACTIONS — flex-wrap so buttons wrap on mobile, flex-1 so they share space evenly */}
+      <div className="flex flex-wrap gap-3 justify-center pb-6">
+        <button
+          onClick={() => setReviewMode(true)}
+          className="bg-purple-600 text-white px-4 py-2.5 rounded font-semibold text-sm flex-1 min-w-[130px] max-w-[200px]"
+        >
           Review Answers
         </button>
-        <button onClick={onRestart} className="bg-blue-600 text-white px-6 py-3 rounded font-semibold">
-          Restart
+        <button
+          onClick={onRestart}
+          className="bg-blue-600 text-white px-4 py-2.5 rounded font-semibold text-sm flex-1 min-w-[100px] max-w-[200px]"
+        >
+          Dashboard
         </button>
         <button
           onClick={downloadPDF}
           disabled={downloading}
-          className={`px-6 py-3 rounded font-semibold text-white transition ${downloading ? "bg-green-400 cursor-wait" : "bg-green-600 hover:bg-green-700"}`}
+          className={`px-4 py-2.5 rounded font-semibold text-sm text-white transition flex-1 min-w-[140px] max-w-[200px] ${
+            downloading ? "bg-green-400 cursor-wait" : "bg-green-600 hover:bg-green-700"
+          }`}
         >
-          {downloading ? "Generating PDF..." : "⬇ Download Report"}
+          {downloading ? "Generating..." : "⬇ Download Report"}
         </button>
       </div>
 

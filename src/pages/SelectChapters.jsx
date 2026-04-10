@@ -10,7 +10,7 @@ const SUBJECT_COLORS = [
   { accent: "#8b5cf6", light: "#ede9fe", border: "#c4b5fd", dark: "#6d28d9" },
 ];
 
-export default function SelectChapters({ onNext }) {
+export default function SelectChapters({ onNext, onBack }) {
   const [selected, setSelected] = useState([]);
   const [expandedSubjects, setExpandedSubjects] = useState(() => {
     const init = {};
@@ -19,9 +19,17 @@ export default function SelectChapters({ onNext }) {
   });
   const [search, setSearch] = useState("");
 
-  const toggle = (chapter) => {
+  // Create unique identifier for each chapter: subject|class|chapterName
+  const makeChapterId = (subject, cls, chapter) => `${subject}|${cls}|${chapter}`;
+  const parseChapterId = (id) => {
+    const [subject, cls, ...rest] = id.split('|');
+    return { subject, cls, chapter: rest.join('|') };
+  };
+
+  const toggle = (subject, cls, chapter) => {
+    const id = makeChapterId(subject, cls, chapter);
     setSelected((prev) =>
-      prev.includes(chapter) ? prev.filter((c) => c !== chapter) : [...prev, chapter]
+      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]
     );
   };
 
@@ -29,25 +37,29 @@ export default function SelectChapters({ onNext }) {
     setExpandedSubjects((prev) => ({ ...prev, [subject]: !prev[subject] }));
   };
 
-  const allChapters = useMemo(() => {
+  const allChapterIds = useMemo(() => {
     const all = [];
-    Object.entries(syllabus).forEach(([, classes]) =>
-      Object.entries(classes).forEach(([, chapters]) => chapters.forEach((ch) => all.push(ch)))
+    Object.entries(syllabus).forEach(([subject, classes]) =>
+      Object.entries(classes).forEach(([cls, chapters]) =>
+        chapters.forEach((ch) => all.push(makeChapterId(subject, cls, ch)))
+      )
     );
     return all;
   }, []);
 
-  const selectAll = () => setSelected([...allChapters]);
+  const selectAll = () => setSelected([...allChapterIds]);
   const clearAll = () => setSelected([]);
 
   const selectSubject = (subject) => {
-    const chapters = [];
-    Object.values(syllabus[subject]).forEach((chs) => chapters.push(...chs));
-    const allSelected = chapters.every((ch) => selected.includes(ch));
+    const chapterIds = [];
+    Object.entries(syllabus[subject]).forEach(([cls, chapters]) =>
+      chapters.forEach((ch) => chapterIds.push(makeChapterId(subject, cls, ch)))
+    );
+    const allSelected = chapterIds.every((id) => selected.includes(id));
     if (allSelected) {
-      setSelected((prev) => prev.filter((c) => !chapters.includes(c)));
+      setSelected((prev) => prev.filter((c) => !chapterIds.includes(c)));
     } else {
-      setSelected((prev) => [...new Set([...prev, ...chapters])]);
+      setSelected((prev) => [...new Set([...prev, ...chapterIds])]);
     }
   };
 
@@ -65,6 +77,12 @@ export default function SelectChapters({ onNext }) {
     });
     return result;
   }, [search]);
+
+  const handleContinue = () => {
+    // Extract just the chapter names from the selected IDs for backward compatibility
+    const chapterNames = selected.map(id => parseChapterId(id).chapter);
+    onNext(chapterNames);
+  };
 
   return (
     <>
@@ -159,6 +177,26 @@ export default function SelectChapters({ onNext }) {
           border-color: #6366f1;
           color: #6366f1;
           background: #eef2ff;
+        }
+
+        .sc-back-btn {
+          background: transparent;
+          border: none;
+          color: #6366f1;
+          font-size: 14px;
+          font-family: 'Plus Jakarta Sans', sans-serif;
+          font-weight: 600;
+          padding: 7px 10px;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: all 0.15s;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+        }
+        .sc-back-btn:hover {
+          color: #4338ca;
+          text-decoration: underline;
         }
 
         .sc-counter {
@@ -428,6 +466,11 @@ export default function SelectChapters({ onNext }) {
         {/* HEADER */}
         <header className="sc-header">
           <div className="sc-header-inner">
+            {onBack && (
+              <button className="sc-back-btn" onClick={onBack}>
+                ← Back
+              </button>
+            )}
             <h1 className="sc-title">Select Chapters</h1>
 
             <div className="sc-search-wrap">
@@ -459,10 +502,15 @@ export default function SelectChapters({ onNext }) {
             Object.entries(filteredSyllabus).map(([subject, classes], sIdx) => {
               const color = SUBJECT_COLORS[sIdx % SUBJECT_COLORS.length];
               const subjectChapters = Object.values(classes).flat();
-              const selectedCount = subjectChapters.filter((ch) => selected.includes(ch)).length;
+              const selectedCount = subjectChapters.filter((ch) => {
+                const chapterIds = [];
+                Object.keys(classes).forEach(cls => {
+                  chapterIds.push(makeChapterId(subject, cls, ch));
+                });
+                return chapterIds.some(id => selected.includes(id));
+              }).length;
               const allSel = selectedCount === subjectChapters.length && subjectChapters.length > 0;
               const isOpen = expandedSubjects[subject] !== false;
-
               return (
                 <div className="sc-subject-card" key={subject}>
 
@@ -501,7 +549,8 @@ export default function SelectChapters({ onNext }) {
                           <div className="sc-class-label">{cls}</div>
                           <div className="sc-chapters-grid">
                             {chapters.map((ch) => {
-                              const isSel = selected.includes(ch);
+                              const chapterId = makeChapterId(subject, cls, ch);
+                              const isSel = selected.includes(chapterId);
                               return (
                                 <button
                                   key={ch}
@@ -512,7 +561,7 @@ export default function SelectChapters({ onNext }) {
                                     "--chip-border": color.border,
                                     "--chip-dark": color.dark,
                                   }}
-                                  onClick={() => toggle(ch)}
+                                  onClick={() => toggle(subject, cls, ch)}
                                 >
                                   <div className="sc-check-box">
                                     <svg className="sc-check-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -543,7 +592,7 @@ export default function SelectChapters({ onNext }) {
             </div>
             <button
               className="sc-continue-btn"
-              onClick={() => onNext(selected)}
+              onClick={handleContinue}
               disabled={selected.length === 0}
             >
               Continue
