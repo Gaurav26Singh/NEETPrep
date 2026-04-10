@@ -44,8 +44,8 @@ export default function ResultScreen({ questions, answers, user, onRestart }) {
     });
 
     const score = correct * 4 - incorrect;
-    const accuracy =
-      correct + incorrect === 0 ? 0 : Math.round((correct / (correct + incorrect)) * 100);
+    const total = correct + incorrect + unattempted;
+    const accuracy = total === 0 ? 0 : Math.round((correct / total) * 100);
 
     return { correct, incorrect, unattempted, score, accuracy, sectionStats };
   }, [questions, answers]);

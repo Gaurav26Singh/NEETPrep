@@ -705,14 +705,9 @@ export default function Dashboard({ user, onStartTest }) {
                         {chapterGroups.length > 0 ? (
                           <div className="mt-2">
                             <div className="flex flex-wrap gap-3 items-start py-1 text-sm">
-                              {chapterGroups.map(({ subject, chapters }, idx) => (
-                                <span key={subject} className="inline-flex flex-wrap items-center gap-1">
-                                  <span className={`font-semibold ${colors[idx % colors.length]}`}>
-                                    {subject}:
-                                  </span>
-                                  <span className="text-slate-700 break-words">
-                                    {chapters.join(", ")}
-                                  </span>
+                              {chapterGroups.map(({ subject }, idx) => (
+                                <span key={subject} className={`inline-flex items-center gap-1 font-semibold ${colors[idx % colors.length]}`}>
+                                  {subject}
                                 </span>
                               ))}
                             </div>
